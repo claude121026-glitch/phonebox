@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Chess Championship Live</title>
+<style>
+:root{
+  --bg:#f3f1ec;--panel:#ffffff;--fg:#1d1f24;--muted:#6b6f78;--line:#dedad2;
+  --light:#ece3cf;--dark:#8a6f4e;--hl:rgba(230,190,40,.55);--accent:#2f6f4f;--bad:#b3322a;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#15171b;--panel:#1f2228;--fg:#eceae4;--muted:#9a9ea8;--line:#2e3239;
+  --light:#cdbf9f;--dark:#7a5f40;--hl:rgba(230,190,40,.6);--accent:#5fbf8c;--bad:#e2685f;
+  color-scheme:dark;
+}}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  padding:max(12px,env(safe-area-inset-top)) max(14px,env(safe-area-inset-right)) max(16px,env(safe-area-inset-bottom)) max(14px,env(safe-area-inset-left))}
+.wrap{max-width:560px;margin:0 auto;display:flex;flex-direction:column;gap:12px}
+header{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
+h1{font-size:1.15rem;margin:0}
+.sub{color:var(--muted);font-size:.85rem}
+.live{display:inline-flex;align-items:center;gap:6px;font-size:.8rem;font-weight:600;color:var(--accent)}
+.live i{width:8px;height:8px;border-radius:50%;background:currentColor;animation:p 1.6s infinite}
+@keyframes p{50%{opacity:.25}}
+@media (prefers-reduced-motion:reduce){.live i{animation:none}}
+select,button{font:inherit;color:var(--fg);background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px 10px}
+button{cursor:pointer}
+button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.row{display:flex;gap:8px;flex-wrap:wrap}
+.row select{flex:1;min-width:0}
+.player{display:flex;align-items:center;justify-content:space-between;gap:8px;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px 10px}
+.player .n{font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.player .n small{color:var(--muted);font-weight:400;margin-left:4px}
+.clock{font-variant-numeric:tabular-nums;font-weight:700;font-size:1.1rem;padding:2px 8px;border-radius:6px}
+.clock.run{background:var(--fg);color:var(--bg)}
+.board{display:grid;grid-template-columns:repeat(8,1fr);width:100%;aspect-ratio:1;border-radius:6px;overflow:hidden;border:1px solid var(--line);user-select:none}
+.sq{position:relative;display:flex;align-items:center;justify-content:center;font-size:min(10vw,52px);line-height:1}
+.sq.l{background:var(--light)}.sq.d{background:var(--dark)}
+.sq.h::after{content:"";position:absolute;inset:0;background:var(--hl)}
+.sq span{position:relative;z-index:1}
+.pw{color:#fff;text-shadow:0 0 2px #000,0 0 1px #000}
+.pb{color:#111;text-shadow:0 0 1px rgba(255,255,255,.6)}
+.coord{position:absolute;font-size:9px;color:rgba(0,0,0,.55);z-index:1}
+.coord.f{right:2px;bottom:1px}.coord.r{left:2px;top:1px}
+.status{display:flex;justify-content:space-between;gap:8px;color:var(--muted);font-size:.85rem;flex-wrap:wrap}
+.result{font-weight:700;color:var(--fg)}
+.moves{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px;max-height:180px;overflow:auto;font-variant-numeric:tabular-nums;font-size:.9rem;word-spacing:2px}
+.msg{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px}
+.msg.err{border-color:var(--bad)}
+a{color:var(--accent)}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1 id="title">World Chess Championship</h1>
+      <div class="sub" id="round">Finding the live broadcast…</div>
+    </div>
+    <span class="live" id="live" hidden><i></i>LIVE</span>
+  </header>
+
+  <div class="row">
+    <select id="event" aria-label="Event"></select>
+    <select id="roundSel" aria-label="Round"></select>
+  </div>
+  <div class="row">
+    <select id="gameSel" aria-label="Game"></select>
+    <button id="flip" type="button">Flip board</button>
+  </div>
+
+  <div id="msg" class="msg" hidden></div>
+
+  <div id="view">
+    <div class="player" id="top"><span class="n"></span><span class="clock"></span></div>
+    <div class="board" id="board" style="margin:8px 0"></div>
+    <div class="player" id="bottom"><span class="n"></span><span class="clock"></span></div>
+  </div>
+  <div class="status"><span id="state"></span><span id="updated"></span></div>
+  <div class="moves" id="moves">Moves will appear here.</div>
+  <div class="sub">Live data from the free <a href="https://lichess.org/broadcast" target="_blank" rel="noopener">Lichess broadcast</a> feed. Updates every 10 seconds.</div>
+</div>
+
+<script>
+(() => {
+  const API = "https://lichess.org/api";
+  const POLL_MS = 10000;
+  const GLYPH = {k:"♚",q:"♛",r:"♜",b:"♝",n:"♞",p:"♟"};
+  const $ = id => document.getElementById(id);
+  const st = { tours: [], tourId: null, roundId: null, gameId: null, flipped: false, data: null, fetchedAt: 0, timer: null };
+  try { st.flipped = localStorage.getItem("cl_flip") === "1"; } catch {}
+
+  async function getJSON(url) {
+    const r = await fetch(url, { headers: { Accept: "application/json" } });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    return r.json();
+  }
+  async function getText(url) {
+    const r = await fetch(url);
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    return r.text();
+  }
+  function showMsg(text, err) { const m = $("msg"); m.textContent = text; m.className = "msg" + (err ? " err" : ""); m.hidden = !text; }
+  function opt(sel, value, label, selected) { const o = document.createElement("option"); o.value = value; o.textContent = label; if (selected) o.selected = true; sel.appendChild(o); }
+
+  // ---------- events ----------
+  async function loadEvents() {
+    const top = await getJSON(API + "/broadcast/top?page=1");
+    const list = [...(top.active || []), ...(top.upcoming || [])];
+    const past = (top.past && top.past.currentPageResults) || [];
+    st.tours = [...list, ...past].filter(b => b && b.tour);
+    const sel = $("event"); sel.innerHTML = "";
+    const want = /world\s*(chess\s*)?championship|gukesh|sindarov/i;
+    let pick = st.tours.find(b => want.test(b.tour.name)) || st.tours[0];
+    st.tours.forEach(b => opt(sel, b.tour.id, b.tour.name, b === pick));
+    if (!pick) throw new Error("No broadcasts found.");
+    await selectTour(pick.tour.id);
+  }
+
+  async function selectTour(id) {
+    st.tourId = id;
+    const t = await getJSON(API + "/broadcast/" + id);
+    $("title").textContent = t.tour.name;
+    const sel = $("roundSel"); sel.innerHTML = "";
+    const rounds = t.rounds || [];
+    const cur = rounds.find(r => r.ongoing) || rounds.find(r => r.id === t.defaultRoundId) ||
+      [...rounds].reverse().find(r => r.finished) || rounds[0];
+    rounds.forEach(r => opt(sel, r.id, r.name + (r.ongoing ? " • live" : ""), r === cur));
+    if (cur) await selectRound(cur.id);
+  }
+
+  async function selectRound(id) {
+    st.roundId = id; st.gameId = null;
+    await refresh(true);
+  }
+
+  // ---------- polling ----------
+  async function refresh(rebuildGames) {
+    clearTimeout(st.timer);
+    try {
+      const d = await getJSON(API + "/broadcast/-/-/" + st.roundId);
+      st.data = d; st.fetchedAt = Date.now();
+      const games = d.games || [];
+      if (rebuildGames || !games.some(g => g.id === st.gameId)) {
+        const sel = $("gameSel"); sel.innerHTML = "";
+        if (!st.gameId || !games.some(g => g.id === st.gameId)) st.gameId = (games.find(g => g.status === "*") || games[0] || {}).id;
+        games.forEach(g => opt(sel, g.id, gameLabel(g), g.id === st.gameId));
+        $("gameSel").hidden = games.length < 2;
+      }
+      $("round").textContent = (d.round && d.round.name) || "";
+      const ongoing = d.round && d.round.ongoing;
+      $("live").hidden = !ongoing;
+      showMsg(games.length ? "" : "This round has no games yet. It will appear here when it starts.");
+      render();
+      loadMoves();
+    } catch (e) {
+      showMsg("Couldn't reach Lichess (" + e.message + "). Check your internet connection. Retrying…", true);
+    }
+    st.timer = setTimeout(() => refresh(false), POLL_MS);
+  }
+
+  function gameLabel(g) {
+    const p = g.players || [];
+    return (p[0] ? p[0].name : "?") + " – " + (p[1] ? p[1].name : "?") + (g.status && g.status !== "*" ? "  (" + g.status + ")" : "");
+  }
+  function currentGame() { return st.data && (st.data.games || []).find(g => g.id === st.gameId); }
+
+  // ---------- render ----------
+  function render() {
+    const g = currentGame(); if (!g) return;
+    const fen = g.fen || "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w - - 0 1";
+    const [placement, turn] = fen.split(" ");
+    drawBoard(placement, g.lastMove);
+    const [white, black] = g.players || [];
+    const ongoing = g.status === "*";
+    const topP = st.flipped ? white : black, botP = st.flipped ? black : white;
+    const topSide = st.flipped ? "w" : "b", botSide = st.flipped ? "b" : "w";
+    fillPlayer($("top"), topP, ongoing && turn === topSide);
+    fillPlayer($("bottom"), botP, ongoing && turn === botSide);
+    $("state").innerHTML = "";
+    const s = document.createElement("span");
+    if (ongoing) s.textContent = (turn === "w" ? "White" : "Black") + " to move";
+    else { s.className = "result"; s.textContent = "Result: " + g.status; }
+    $("state").appendChild(s);
+    $("updated").textContent = "Updated " + new Date(st.fetchedAt).toLocaleTimeString();
+  }
+
+  function fillPlayer(el, p, running) {
+    const n = el.querySelector(".n"), c = el.querySelector(".clock");
+    n.textContent = p ? ((p.title ? p.title + " " : "") + p.name) : "—";
+    if (p && p.rating) { const sm = document.createElement("small"); sm.textContent = p.rating; n.appendChild(sm); }
+    let cs = p && typeof p.clock === "number" ? p.clock : null; // centiseconds
+    if (cs != null && running) cs = Math.max(0, cs - Math.floor((Date.now() - st.fetchedAt) / 10));
+    c.textContent = cs == null ? "" : fmtClock(cs);
+    c.className = "clock" + (running ? " run" : "");
+  }
+  function fmtClock(cs) {
+    const s = Math.floor(cs / 100), h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), sec = s % 60;
+    const pad = x => String(x).padStart(2, "0");
+    return h ? h + ":" + pad(m) + ":" + pad(sec) : m + ":" + pad(sec);
+  }
+
+  function drawBoard(placement, lastMove) {
+    const rows = placement.split("/"), grid = [];
+    for (const r of rows) { const row = []; for (const ch of r) { if (/\d/.test(ch)) for (let i = 0; i < +ch; i++) row.push(null); else row.push(ch); } grid.push(row); }
+    const hl = new Set();
+    if (lastMove && lastMove.length >= 4) { hl.add(lastMove.slice(0, 2)); hl.add(lastMove.slice(2, 4)); }
+    const b = $("board"); b.innerHTML = "";
+    for (let vr = 0; vr < 8; vr++) for (let vf = 0; vf < 8; vf++) {
+      const r = st.flipped ? 7 - vr : vr, f = st.flipped ? 7 - vf : vf;
+      const sqName = "abcdefgh"[f] + (8 - r);
+      const d = document.createElement("div");
+      d.className = "sq " + ((r + f) % 2 ? "d" : "l") + (hl.has(sqName) ? " h" : "");
+      const pc = grid[r] && grid[r][f];
+      if (pc) { const s = document.createElement("span"); s.textContent = GLYPH[pc.toLowerCase()]; s.className = pc === pc.toUpperCase() ? "pw" : "pb"; d.appendChild(s); }
+      if (vr === 7) { const c = document.createElement("span"); c.className = "coord f"; c.textContent = "abcdefgh"[f]; d.appendChild(c); }
+      if (vf === 0) { const c = document.createElement("span"); c.className = "coord r"; c.textContent = 8 - r; d.appendChild(c); }
+      b.appendChild(d);
+    }
+  }
+
+  // ---------- moves (from PGN) ----------
+  let lastMovesKey = "";
+  async function loadMoves() {
+    const g = currentGame(); if (!g) return;
+    const key = st.roundId + g.id + (g.fen || "");
+    if (key === lastMovesKey) return; lastMovesKey = key;
+    try {
+      const pgn = await getText(API + "/broadcast/round/" + st.roundId + ".pgn");
+      const games = pgn.split(/\n\n(?=\[Event )/);
+      const [w, bl] = g.players || [];
+      const mine = games.find(t => w && bl && t.includes('[White "' + w.name + '"]') && t.includes('[Black "' + bl.name + '"]')) || (games.length === 1 ? games[0] : null);
+      if (!mine) return;
+      const body = mine.replace(/^\[.*\]\s*$/gm, "").replace(/\{[^}]*\}/g, "").replace(/\([^)]*\)/g, "").replace(/\$\d+/g, "").replace(/\s+/g, " ").trim();
+      $("moves").textContent = body || "No moves yet.";
+      $("moves").scrollTop = $("moves").scrollHeight;
+    } catch { /* moves are optional */ }
+  }
+
+  // ---------- controls ----------
+  $("event").addEventListener("change", e => selectTour(e.target.value).catch(err => showMsg("Couldn't load event: " + err.message, true)));
+  $("roundSel").addEventListener("change", e => selectRound(e.target.value));
+  $("gameSel").addEventListener("change", e => { st.gameId = e.target.value; lastMovesKey = ""; render(); loadMoves(); });
+  $("flip").addEventListener("click", () => { st.flipped = !st.flipped; try { localStorage.setItem("cl_flip", st.flipped ? "1" : "0"); } catch {} render(); });
+  setInterval(() => { if (st.data) render(); }, 1000); // tick the running clock
+  document.addEventListener("visibilitychange", () => { if (!document.hidden && st.roundId) refresh(false); });
+
+  drawBoard("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR", null);
+  loadEvents().catch(e => showMsg("Couldn't load broadcasts from Lichess (" + e.message + "). Check your internet connection, then reload.", true));
+})();
+</script>
+</body>
+</html>
