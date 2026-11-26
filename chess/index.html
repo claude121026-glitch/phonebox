@@ -156,7 +156,27 @@ body.land #view{order:0;justify-content:center}
     rounds.forEach(r => opt(sel, r.id, r.name + (r.ongoing ? " • live" : ""), r === cur));
     if (cur) await selectRound(cur.id);
   }
-  async function selectRound(id) { st.roundId = id; st.gameId = null; await refresh(true); }
+  async function selectRound(id) { st.roundId = id; st.gameId = null; startStream(id); await refresh(true); }
+
+  // ---------- live stream: Lichess pushes PGN the moment a move is played ----------
+  // Each push just triggers an immediate refresh; slow polling stays on as a fallback.
+  function kick() { clearTimeout(st.kickT); st.kickT = setTimeout(() => refresh(false), 400); }
+  async function startStream(roundId) {
+    if (st.ctl) st.ctl.abort();
+    const ctl = new AbortController(); st.ctl = ctl; st.streaming = false;
+    let wait = 15000;
+    try {
+      const r = await fetch(API + "/stream/broadcast/round/" + roundId + ".pgn", { signal: ctl.signal });
+      if (r.status === 429) wait = 60000;
+      else if (r.ok && r.body) {
+        st.streaming = true;
+        const reader = r.body.getReader();
+        for (;;) { const x = await reader.read(); if (x.done) break; if (x.value && x.value.length) kick(); }
+      }
+    } catch (e) { /* network drop or abort */ }
+    st.streaming = false;
+    if (!ctl.signal.aborted && st.roundId === roundId) setTimeout(() => { if (st.ctl === ctl) startStream(roundId); }, wait);
+  }
 
   async function refresh(rebuildGames) {
     clearTimeout(st.timer);
@@ -181,7 +201,7 @@ body.land #view{order:0;justify-content:center}
       st.timer = setTimeout(() => refresh(false), limited ? 60000 : POLL_MS);
       return;
     }
-    st.timer = setTimeout(() => refresh(false), POLL_MS);
+    st.timer = setTimeout(() => refresh(false), st.streaming ? 30000 : POLL_MS);
   }
   function gameLabel(g) {
     const p = g.players || [];
@@ -198,14 +218,14 @@ body.land #view{order:0;justify-content:center}
     const ongoing = g.status === "*";
     drawEval();
     if (ongoing && g.fen) loadEval(g.fen);
-    fillPlayer($("top"), st.flipped ? white : black, ongoing && turn === (st.flipped ? "w" : "b"));
-    fillPlayer($("bottom"), st.flipped ? black : white, ongoing && turn === (st.flipped ? "b" : "w"));
+    fillPlayer($("top"), st.flipped ? white : black, ongoing && turn === (st.flipped ? "w" : "b"), g.thinkTime);
+    fillPlayer($("bottom"), st.flipped ? black : white, ongoing && turn === (st.flipped ? "b" : "w"), g.thinkTime);
     $("state").innerHTML = "";
     const s = document.createElement("span");
     if (ongoing) s.textContent = (turn === "w" ? "White" : "Black") + " to move";
     else { s.className = "result"; s.textContent = "Result: " + g.status; }
     $("state").appendChild(s);
-    $("updated").textContent = "Lichess · " + new Date(st.fetchedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    $("updated").textContent = (st.streaming ? "⚡ live" : "Lichess") + " · " +new Date(st.fetchedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
   }
   // ---------- evaluation bar (Lichess cloud eval, white's point of view) ----------
   const ev = { fen: null, cp: null, mate: null, known: false, busy: false, until: 0 };
@@ -239,12 +259,14 @@ body.land #view{order:0;justify-content:center}
     t.textContent = txt ? "· " + txt : "";
   }
 
-  function fillPlayer(el, p, running) {
+  function fillPlayer(el, p, running, thinkTime) {
     const n = el.querySelector(".n"), c = el.querySelector(".clock");
     n.textContent = p ? ((p.title ? p.title + " " : "") + p.name) : "—";
     if (p && p.rating) { const sm = document.createElement("small"); sm.textContent = p.rating; n.appendChild(sm); }
+    // Lichess gives the clock as it was at the last move (centiseconds) and thinkTime = seconds
+    // the side to move has spent since then, so the live clock = clock - thinkTime - time since fetch.
     let cs = p && typeof p.clock === "number" ? p.clock : null;
-    if (cs != null && running) cs = Math.max(0, cs - Math.floor((Date.now() - st.fetchedAt) / 10));
+    if (cs != null && running) cs = Math.max(0, cs - (typeof thinkTime === "number" ? thinkTime * 100 : 0) - Math.floor((Date.now() - st.fetchedAt) / 10));
     c.textContent = cs == null ? "" : fmtClock(cs);
     c.className = "clock" + (running ? " run" : "");
   }
