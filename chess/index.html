@@ -38,6 +38,13 @@ button{flex:none;cursor:pointer}
 .player .n small{color:var(--muted);font-weight:400;margin-left:4px}
 .clock{font-variant-numeric:tabular-nums;font-weight:700;font-size:13px;padding:1px 6px;border-radius:5px;flex:none}
 .clock.run{background:var(--fg);color:var(--bg)}
+.boardrow{display:flex;gap:4px;align-items:stretch}
+.evalbar{position:relative;width:14px;flex:none;border-radius:4px;overflow:hidden;background:#3a3d44;border:1px solid var(--line)}
+.evalbar .w{position:absolute;left:0;right:0;bottom:0;height:50%;background:#f1efe9;transition:height .6s ease}
+.evalbar.flip .w{top:0;bottom:auto}
+.evalbar .mid{position:absolute;left:0;right:0;top:50%;height:1px;background:rgba(230,80,60,.7);z-index:1}
+.evalbar.stale{opacity:.45}
+.evaltxt{font-weight:700;color:var(--fg);font-variant-numeric:tabular-nums}
 .board{display:grid;grid-template-columns:repeat(8,1fr);grid-template-rows:repeat(8,1fr);border-radius:4px;overflow:hidden;user-select:none}
 .sq{position:relative;display:flex;align-items:center;justify-content:center;line-height:1;overflow:hidden}
 .sq.l{background:var(--light)}.sq.d{background:var(--dark)}
@@ -59,7 +66,10 @@ body.land #view{order:0;justify-content:center}
 <div class="wrap">
   <div id="view">
     <div class="player" id="top"><span class="n"></span><span class="clock"></span></div>
-    <div class="board" id="board"></div>
+    <div class="boardrow">
+      <div class="evalbar stale" id="evalbar" title="Engine evaluation (Lichess cloud)"><div class="mid"></div><div class="w" id="evalw"></div></div>
+      <div class="board" id="board"></div>
+    </div>
     <div class="player" id="bottom"><span class="n"></span><span class="clock"></span></div>
   </div>
   <div id="side">
@@ -74,7 +84,7 @@ body.land #view{order:0;justify-content:center}
       <button id="flip" type="button" aria-label="Flip board">&#8645;</button>
     </div>
     <div id="msg" class="msg" hidden></div>
-    <div class="status"><span id="state"></span><span id="updated"></span></div>
+    <div class="status"><span><span id="state"></span> <span class="evaltxt" id="evaltxt"></span></span><span id="updated"></span></div>
     <div class="moves" id="moves">Moves will appear here.</div>
   </div>
 </div>
@@ -90,23 +100,23 @@ body.land #view{order:0;justify-content:center}
   // ---------- fit everything on one screen ----------
   function h(el) { if (!el || el.hidden) return 0; const r = el.getBoundingClientRect(); return r.height; }
   function fit() {
-    const W = window.innerWidth, H = window.innerHeight, pad = 12, gap = 6;
+    const W = window.innerWidth, H = window.innerHeight, pad = 12, gap = 6, bar = 18;
     const land = W > H * 1.15;
     document.body.classList.toggle("land", land);
     const players = h($("top")) + h($("bottom")) + 8;
     let size;
     if (land) {
-      size = Math.min(H - pad - players, (W - pad) * 0.62);
+      size = Math.min(H - pad - players, (W - pad) * 0.62 - bar);
     } else {
       const other = h(document.querySelector("header")) + h(document.querySelector(".row")) + h($("msg")) +
                     h(document.querySelector(".status")) + 28 /* moves min */ + gap * 5;
-      size = Math.min(W - pad, H - pad - players - other);
+      size = Math.min(W - pad - bar, H - pad - players - other);
     }
     size = Math.max(120, Math.floor(size / 8) * 8);
     const b = $("board");
     b.style.width = b.style.height = size + "px";
     b.style.fontSize = Math.floor(size / 8 * 0.78) + "px";
-    $("top").style.width = $("bottom").style.width = size + "px";
+    $("top").style.width = $("bottom").style.width = (size + bar) + "px";
   }
   window.addEventListener("resize", fit);
 
@@ -186,6 +196,8 @@ body.land #view{order:0;justify-content:center}
     drawBoard(placement, g.lastMove);
     const white = (g.players || [])[0], black = (g.players || [])[1];
     const ongoing = g.status === "*";
+    drawEval();
+    if (ongoing && g.fen) loadEval(g.fen);
     fillPlayer($("top"), st.flipped ? white : black, ongoing && turn === (st.flipped ? "w" : "b"));
     fillPlayer($("bottom"), st.flipped ? black : white, ongoing && turn === (st.flipped ? "b" : "w"));
     $("state").innerHTML = "";
@@ -195,6 +207,38 @@ body.land #view{order:0;justify-content:center}
     $("state").appendChild(s);
     $("updated").textContent = "Lichess · " + new Date(st.fetchedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
   }
+  // ---------- evaluation bar (Lichess cloud eval, white's point of view) ----------
+  const ev = { fen: null, cp: null, mate: null, known: false, busy: false, until: 0 };
+  async function loadEval(fen) {
+    if (fen === ev.fen || ev.busy || Date.now() < ev.until) return;
+    ev.busy = true;
+    try {
+      const r = await fetch(API + "/cloud-eval?fen=" + encodeURIComponent(fen));
+      if (r.status === 429) { ev.until = Date.now() + 60000; return; }
+      ev.fen = fen;
+      if (!r.ok) { ev.known = false; return; }          // 404: position not analysed yet
+      const pv = ((await r.json()).pvs || [])[0] || {};
+      ev.cp = typeof pv.cp === "number" ? pv.cp : null;
+      ev.mate = typeof pv.mate === "number" ? pv.mate : null;
+      ev.known = ev.cp != null || ev.mate != null;
+    } catch (e) { /* the bar is optional */ }
+    finally { ev.busy = false; drawEval(); }
+  }
+  function drawEval() {
+    const g = currentGame(), bar = $("evalbar"), w = $("evalw"), t = $("evaltxt");
+    bar.classList.toggle("flip", st.flipped);
+    let pct = null, txt = "";
+    if (g && g.status && g.status !== "*") {
+      pct = g.status === "1-0" ? 100 : g.status === "0-1" ? 0 : 50;
+    } else if (g && ev.known && ev.fen === g.fen) {
+      if (ev.mate != null) { pct = ev.mate > 0 ? 100 : 0; txt = (ev.mate > 0 ? "+" : "-") + "M" + Math.abs(ev.mate); }
+      else { const cp = Math.max(-1500, Math.min(1500, ev.cp)); pct = 50 + 50 * (2 / (1 + Math.exp(-0.00368208 * cp)) - 1); txt = (ev.cp > 0 ? "+" : "") + (ev.cp / 100).toFixed(1); }
+    }
+    bar.classList.toggle("stale", pct == null);
+    if (pct != null) w.style.height = pct.toFixed(1) + "%";
+    t.textContent = txt ? "· " + txt : "";
+  }
+
   function fillPlayer(el, p, running) {
     const n = el.querySelector(".n"), c = el.querySelector(".clock");
     n.textContent = p ? ((p.title ? p.title + " " : "") + p.name) : "—";
