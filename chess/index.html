@@ -37,8 +37,8 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
 .player .n small{color:var(--muted);font-weight:400;margin-left:4px}
 .clock{font-variant-numeric:tabular-nums;font-weight:700;font-size:1.1rem;padding:2px 8px;border-radius:6px}
 .clock.run{background:var(--fg);color:var(--bg)}
-.board{display:grid;grid-template-columns:repeat(8,1fr);grid-template-rows:repeat(8,1fr);width:100%;aspect-ratio:1;border-radius:6px;overflow:hidden;border:1px solid var(--line);user-select:none}
-.sq{position:relative;min-width:0;min-height:0;overflow:hidden;display:flex;align-items:center;justify-content:center;font-size:min(10vw,52px);line-height:1}
+.board{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));width:100%;border-radius:6px;overflow:hidden;border:1px solid var(--line);user-select:none}
+.sq{position:relative;aspect-ratio:1;min-width:0;min-height:0;overflow:hidden;display:flex;align-items:center;justify-content:center;font-size:min(10vw,52px);line-height:1}
 .sq.l{background:var(--light)}.sq.d{background:var(--dark)}
 .sq.h::after{content:"";position:absolute;inset:0;background:var(--hl)}
 .sq span{position:relative;z-index:1}
