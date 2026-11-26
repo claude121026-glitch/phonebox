@@ -45,6 +45,14 @@ button{flex:none;cursor:pointer}
 .evalbar .mid{position:absolute;left:0;right:0;top:50%;height:1px;background:rgba(230,80,60,.7);z-index:1}
 .evalbar.stale{opacity:.45}
 .evaltxt{font-weight:700;color:var(--fg);font-variant-numeric:tabular-nums}
+.nav{display:flex;gap:3px;flex:none}
+.nav button{padding:1px 7px;font-size:12px;line-height:1.4}
+.nav button:disabled{opacity:.35}
+.mv{cursor:pointer;padding:0 2px;border-radius:3px}
+.mv.cur{background:var(--accent);color:#0b0f14;font-weight:700}
+.num{color:var(--muted)}
+body.hist .board{outline:2px solid #e6be28;outline-offset:1px}
+body.hist #state{color:#e6be28;font-weight:700}
 .board{display:grid;grid-template-columns:repeat(8,1fr);grid-template-rows:repeat(8,1fr);border-radius:4px;overflow:hidden;user-select:none}
 .sq{position:relative;display:flex;align-items:center;justify-content:center;line-height:1;overflow:hidden}
 .sq.l{background:var(--light)}.sq.d{background:var(--dark)}
@@ -84,7 +92,9 @@ body.land #view{order:0;justify-content:center}
       <button id="flip" type="button" aria-label="Flip board">&#8645;</button>
     </div>
     <div id="msg" class="msg" hidden></div>
-    <div class="status"><span><span id="state"></span> <span class="evaltxt" id="evaltxt"></span></span><span id="updated"></span></div>
+    <div class="status"><span><span id="state"></span> <span class="evaltxt" id="evaltxt"></span></span>
+      <span class="nav"><button id="first" type="button" aria-label="First move">&#9198;</button><button id="prev" type="button" aria-label="Previous move">&#9664;</button><button id="next" type="button" aria-label="Next move">&#9654;</button><button id="last" type="button" aria-label="Back to live">&#9197;</button></span>
+      <span id="updated"></span></div>
     <div class="moves" id="moves">Moves will appear here.</div>
   </div>
 </div>
@@ -94,7 +104,7 @@ body.land #view{order:0;justify-content:center}
   const POLL_MS = 10000;
   const GLYPH = {k:"♚",q:"♛",r:"♜",b:"♝",n:"♞",p:"♟"};
   const $ = id => document.getElementById(id);
-  const st = { tours: [], tourId: null, roundId: null, gameId: null, flipped: false, data: null, fetchedAt: 0, timer: null };
+  const st = { tours: [], tourId: null, roundId: null, gameId: null, flipped: false, data: null, fetchedAt: 0, timer: null, hist: [], ply: null, viewFen: null };
   try { st.flipped = localStorage.getItem("cl_flip") === "1"; } catch (e) {}
 
   // ---------- fit everything on one screen ----------
@@ -156,7 +166,7 @@ body.land #view{order:0;justify-content:center}
     rounds.forEach(r => opt(sel, r.id, r.name + (r.ongoing ? " • live" : ""), r === cur));
     if (cur) await selectRound(cur.id);
   }
-  async function selectRound(id) { st.roundId = id; st.gameId = null; startStream(id); await refresh(true); }
+  async function selectRound(id) { st.roundId = id; st.gameId = null; st.ply = null; st.hist = []; startStream(id); await refresh(true); }
 
   // ---------- live stream: Lichess pushes PGN the moment a move is played ----------
   // Each push just triggers an immediate refresh; slow polling stays on as a fallback.
@@ -211,21 +221,33 @@ body.land #view{order:0;justify-content:center}
 
   function render() {
     const g = currentGame(); if (!g) return;
-    const fen = g.fen || "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w - - 0 1";
+    const liveFen = g.fen || "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w - - 0 1";
+    // Viewing an earlier move? (st.ply = number of moves played in the shown position; null = live)
+    if (st.ply != null && !(st.hist[st.ply])) st.ply = null;
+    const past = st.ply != null ? st.hist[st.ply] : null;
+    document.body.classList.toggle("hist", !!past);
+    const fen = past ? past.fen + " - - 0 1" : liveFen;
+    st.viewFen = fen;
     const parts = fen.split(" "), placement = parts[0], turn = parts[1];
-    drawBoard(placement, g.lastMove);
+    drawBoard(placement, past ? (past.from ? past.from + past.to : null) : g.lastMove);
     const white = (g.players || [])[0], black = (g.players || [])[1];
     const ongoing = g.status === "*";
     drawEval();
-    if (ongoing && g.fen) loadEval(g.fen);
-    fillPlayer($("top"), st.flipped ? white : black, ongoing && turn === (st.flipped ? "w" : "b"), g.thinkTime);
-    fillPlayer($("bottom"), st.flipped ? black : white, ongoing && turn === (st.flipped ? "b" : "w"), g.thinkTime);
+    if (ongoing || past) loadEval(fen);
+    const liveTurn = liveFen.split(" ")[1];
+    fillPlayer($("top"), st.flipped ? white : black, ongoing && liveTurn === (st.flipped ? "w" : "b"), g.thinkTime);
+    fillPlayer($("bottom"), st.flipped ? black : white, ongoing && liveTurn === (st.flipped ? "b" : "w"), g.thinkTime);
     $("state").innerHTML = "";
     const s = document.createElement("span");
-    if (ongoing) s.textContent = (turn === "w" ? "White" : "Black") + " to move";
+    if (past) s.textContent = st.ply === 0 ? "Start position" : "Move " + Math.ceil(st.ply / 2) + (st.ply % 2 ? ". " : "... ") + past.san;
+    else if (ongoing) s.textContent = (turn === "w" ? "White" : "Black") + " to move";
     else { s.className = "result"; s.textContent = "Result: " + g.status; }
     $("state").appendChild(s);
-    $("updated").textContent = (st.streaming ? "⚡ live" : "Lichess") + " · " +new Date(st.fetchedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    const n = st.hist.length - 1;
+    $("first").disabled = $("prev").disabled = n < 1 || st.ply === 0;
+    $("next").disabled = $("last").disabled = st.ply == null;
+    markMove();
+    $("updated").textContent = (st.streaming ? "⚡ " : "") + new Date(st.fetchedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
   }
   // ---------- evaluation bar (Lichess cloud eval, white's point of view) ----------
   const ev = { fen: null, cp: null, mate: null, known: false, busy: false, until: 0 };
@@ -248,9 +270,9 @@ body.land #view{order:0;justify-content:center}
     const g = currentGame(), bar = $("evalbar"), w = $("evalw"), t = $("evaltxt");
     bar.classList.toggle("flip", st.flipped);
     let pct = null, txt = "";
-    if (g && g.status && g.status !== "*") {
+    if (g && st.ply == null && g.status && g.status !== "*") {
       pct = g.status === "1-0" ? 100 : g.status === "0-1" ? 0 : 50;
-    } else if (g && ev.known && ev.fen === g.fen) {
+    } else if (g && ev.known && ev.fen === st.viewFen) {
       if (ev.mate != null) { pct = ev.mate > 0 ? 100 : 0; txt = (ev.mate > 0 ? "+" : "-") + "M" + Math.abs(ev.mate); }
       else { const cp = Math.max(-1500, Math.min(1500, ev.cp)); pct = 50 + 50 * (2 / (1 + Math.exp(-0.00368208 * cp)) - 1); txt = (ev.cp > 0 ? "+" : "") + (ev.cp / 100).toFixed(1); }
     }
@@ -305,14 +327,121 @@ body.land #view{order:0;justify-content:center}
       const mine = games.find(t => w && bl && t.includes('[White "' + w.name + '"]') && t.includes('[Black "' + bl.name + '"]')) || (games.length === 1 ? games[0] : null);
       if (!mine) return;
       const body = mine.replace(/^\[.*\]\s*$/gm, "").replace(/\{[^}]*\}/g, "").replace(/\([^)]*\)/g, "").replace(/\$\d+/g, "").replace(/\s+/g, " ").trim();
-      $("moves").textContent = body || "No moves yet.";
-      $("moves").scrollTop = $("moves").scrollHeight;
+      const sans = body.split(" ").filter(t => t && !/^\d+\.+$/.test(t) && !/^(1-0|0-1|1\/2-1\/2|\*)$/.test(t)).map(t => t.replace(/^\d+\.+/, ""));
+      st.hist = replaySAN(sans);
+      renderMoves();
+      render();
     } catch (e) { /* moves are optional */ }
   }
 
+  // ---------- tiny SAN replayer: turns the move list into a position for every move ----------
+  function replaySAN(sans) {
+    const B = []; // B[r][f], r=0 is rank 8
+    "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR".split("/").forEach(row => { const a = []; for (const ch of row) { if (/\d/.test(ch)) for (let i = 0; i < +ch; i++) a.push(null); else a.push(ch); } B.push(a); });
+    const out = [{ fen: toFen(B, "w"), from: null, to: null }];
+    let white = true;
+    const sq = s => [8 - +s[1], "abcdefgh".indexOf(s[0])];
+    const name = (r, f) => "abcdefgh"[f] + (8 - r);
+    const own = (p, w) => p && (w ? p === p.toUpperCase() : p === p.toLowerCase());
+    function attacks(b, r, f, tr, tf) { // can the piece on r,f reach tr,tf by its movement (ignoring pins)?
+      const p = b[r][f].toLowerCase(), dr = tr - r, df = tf - f, adr = Math.abs(dr), adf = Math.abs(df);
+      if (p === "n") return (adr === 1 && adf === 2) || (adr === 2 && adf === 1);
+      if (p === "k") return Math.max(adr, adf) === 1;
+      if (p === "p") { const dir = b[r][f] === "P" ? -1 : 1; return dr === dir && adf === 1; }
+      const diag = adr === adf && adr > 0, line = (dr === 0) !== (df === 0);
+      if ((p === "b" && !diag) || (p === "r" && !line) || (p === "q" && !diag && !line)) return false;
+      const sr = Math.sign(dr), sf = Math.sign(df);
+      for (let i = 1; i < Math.max(adr, adf); i++) if (b[r + sr * i][f + sf * i]) return false;
+      return true;
+    }
+    function inCheck(b, w) {
+      let kr = -1, kf = -1;
+      for (let r = 0; r < 8; r++) for (let f = 0; f < 8; f++) if (b[r][f] === (w ? "K" : "k")) { kr = r; kf = f; }
+      if (kr < 0) return false;
+      for (let r = 0; r < 8; r++) for (let f = 0; f < 8; f++) if (b[r][f] && !own(b[r][f], w) && attacks(b, r, f, kr, kf)) return true;
+      return false;
+    }
+    for (const raw of sans) {
+      const san = raw.replace(/[+#!?]/g, "");
+      let from, to;
+      if (/^(O-O(-O)?|0-0(-0)?)$/.test(san)) {
+        const r = white ? 7 : 0, long = san.length > 3;
+        from = [r, 4]; to = [r, long ? 2 : 6];
+        B[r][long ? 3 : 5] = B[r][long ? 0 : 7]; B[r][long ? 0 : 7] = null;
+      } else {
+        const m = san.match(/^([NBRQK])?([a-h])?([1-8])?x?([a-h][1-8])=?([NBRQ])?$/);
+        if (!m) return out; // unknown notation: stop here, keep what we have
+        to = sq(m[4]);
+        const type = (m[1] || "P").toLowerCase(), cand = [];
+        for (let r = 0; r < 8; r++) for (let f = 0; f < 8; f++) {
+          const p = B[r][f];
+          if (!own(p, white) || p.toLowerCase() !== type) continue;
+          if (m[2] && "abcdefgh"[f] !== m[2]) continue;
+          if (m[3] && 8 - r !== +m[3]) continue;
+          if (type === "p") {
+            const dir = white ? -1 : 1, capture = san.includes("x");
+            if (capture) { if (!(to[0] - r === dir && Math.abs(to[1] - f) === 1)) continue; }
+            else if (!(f === to[1] && !B[to[0]][to[1]] && (to[0] - r === dir || (to[0] - r === 2 * dir && r === (white ? 6 : 1) && !B[r + dir][f])))) continue;
+          } else if (!attacks(B, r, f, to[0], to[1])) continue;
+          cand.push([r, f]);
+        }
+        const legal = cand.filter(([r, f]) => { // drop pieces that are pinned to their king
+          const b = B.map(a => a.slice()); b[to[0]][to[1]] = b[r][f]; b[r][f] = null; return !inCheck(b, white);
+        });
+        from = (legal.length ? legal : cand)[0];
+        if (!from) return out;
+        const piece = B[from[0]][from[1]];
+        if (type === "p" && from[1] !== to[1] && !B[to[0]][to[1]] && from[0] === (white ? 3 : 4) &&
+            B[from[0]][to[1]] === (white ? "p" : "P")) B[from[0]][to[1]] = null; // en passant
+        B[to[0]][to[1]] = m[5] ? (white ? m[5] : m[5].toLowerCase()) : piece;
+        B[from[0]][from[1]] = null;
+      }
+      if (/^(O-O|0-0)/.test(san)) { B[to[0]][to[1]] = white ? "K" : "k"; B[from[0]][from[1]] = null; }
+      white = !white;
+      out.push({ fen: toFen(B, white ? "w" : "b"), from: name(from[0], from[1]), to: name(to[0], to[1]), san: raw });
+    }
+    return out;
+  }
+  function toFen(B, turn) {
+    return B.map(row => { let s = "", e = 0; for (const p of row) { if (!p) e++; else { if (e) { s += e; e = 0; } s += p; } } return s + (e || ""); }).join("/") + " " + turn;
+  }
+
+  // ---------- move list you can tap, and the step buttons ----------
+  function renderMoves() {
+    const box = $("moves"); box.innerHTML = "";
+    if (st.hist.length < 2) { box.textContent = "No moves yet."; return; }
+    for (let i = 1; i < st.hist.length; i++) {
+      if (i % 2) { const n = document.createElement("span"); n.className = "num"; n.textContent = ((i + 1) / 2) + ". "; box.appendChild(n); }
+      const m = document.createElement("span"); m.className = "mv"; m.dataset.ply = i; m.textContent = st.hist[i].san;
+      box.appendChild(m); box.appendChild(document.createTextNode(" "));
+    }
+    if (st.ply == null) box.scrollTop = box.scrollHeight;
+  }
+  function markMove() {
+    const cur = st.ply == null ? st.hist.length - 1 : st.ply;
+    let el = null;
+    $("moves").querySelectorAll(".mv").forEach(m => { const on = +m.dataset.ply === cur; m.classList.toggle("cur", on); if (on) el = m; });
+    if (el && st.ply != null) { const box = $("moves"), t = el.offsetTop - box.offsetTop; if (t < box.scrollTop || t > box.scrollTop + box.clientHeight - 16) box.scrollTop = t - box.clientHeight / 2; }
+  }
+  function goTo(ply) {
+    const last = st.hist.length - 1;
+    st.ply = ply == null || ply >= last ? null : Math.max(0, ply);
+    render();
+  }
+  $("moves").addEventListener("click", e => { const m = e.target.closest(".mv"); if (m) goTo(+m.dataset.ply); });
+  $("first").addEventListener("click", () => goTo(0));
+  $("prev").addEventListener("click", () => goTo((st.ply == null ? st.hist.length - 1 : st.ply) - 1));
+  $("next").addEventListener("click", () => { if (st.ply != null) goTo(st.ply + 1); });
+  $("last").addEventListener("click", () => goTo(null));
+  document.addEventListener("keydown", e => {
+    if (e.target.tagName === "SELECT") return;
+    if (e.key === "ArrowLeft") $("prev").click(); else if (e.key === "ArrowRight") $("next").click();
+    else if (e.key === "Home") $("first").click(); else if (e.key === "End") $("last").click();
+  });
+
   $("event").addEventListener("change", e => selectTour(e.target.value).catch(err => showMsg("Couldn't load event: " + err.message, true)));
   $("roundSel").addEventListener("change", e => selectRound(e.target.value));
-  $("gameSel").addEventListener("change", e => { st.gameId = e.target.value; lastMovesKey = ""; render(); loadMoves(); fit(); });
+  $("gameSel").addEventListener("change", e => { st.gameId = e.target.value; st.ply = null; st.hist = []; lastMovesKey = ""; render(); loadMoves(); fit(); });
   $("flip").addEventListener("click", () => { st.flipped = !st.flipped; try { localStorage.setItem("cl_flip", st.flipped ? "1" : "0"); } catch (e) {} render(); });
   setInterval(() => { if (st.data) render(); }, 1000);
   document.addEventListener("visibilitychange", () => { if (!document.hidden && st.roundId) refresh(false); });
